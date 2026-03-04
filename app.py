@@ -11,7 +11,8 @@ from database import get_all_tickers, get_tickers_by_group, get_all_groups, get_
 from engine import (get_analysis, send_mail_report, classify_signal,
                     get_futures_analysis, FUTURES_TICKERS,
                     get_all_futures_groups, get_futures_by_group)
-from detail_engine import get_detail_analysis
+from detail_engine import get_detail_analysis, compute_hit_rate
+from ticker_search import search_ticker, label_to_ticker, get_display_name
 
 APP_URL = "https://stockupdate-65qjxum6gq2gpjpr5exqfd.streamlit.app"
 
@@ -124,10 +125,34 @@ with tab1:
 with tab2:
     st.header("Analyse & Chart-Center")
 
-    all_t   = get_all_tickers()
-    # Deep-Link: vorgewählter Ticker aus Email-Klick
-    default_idx = all_t.index(deep_link_ticker) if deep_link_ticker and deep_link_ticker in all_t else 0
-    sel_t   = st.selectbox("Aktie:", all_t, index=default_idx, key="det_t")
+    all_t = get_all_tickers()
+
+    # ── Suchfeld mit Name-Suche ─────────────────────────────────────────────
+    # Deep-Link aus Email: ?ticker=ALV.DE
+    if deep_link_ticker and deep_link_ticker in all_t:
+        if "search_query" not in st.session_state:
+            st.session_state["search_query"] = get_display_name(deep_link_ticker)
+
+    search_q = st.text_input(
+        "🔍 Aktie suchen (Name, Ticker, Alias):",
+        value=st.session_state.get("search_query", ""),
+        placeholder="z.B. Allianz, Samsung, 0700.HK, Tencent, NVDA …",
+        key="search_input",
+    )
+    st.session_state["search_query"] = search_q
+
+    # Suchergebnisse filtern
+    if search_q.strip():
+        suggestions = search_ticker(search_q, all_t, max_results=12)
+    else:
+        suggestions = [get_display_name(t) for t in all_t[:20]]
+
+    if not suggestions:
+        st.warning(f"Keine Treffer für **{search_q}** — bitte Ticker direkt eingeben (z.B. ALV.DE)")
+        suggestions = [get_display_name(t) for t in all_t[:5]]
+
+    sel_label = st.selectbox("Ergebnisse:", suggestions, key="det_t_label")
+    sel_t = label_to_ticker(sel_label)
 
     # Zeitraum-Auswahl — Standard 6 Monate
     tf_opts  = {"3 Monate": 63, "6 Monate": 126, "1 Jahr": 252, "2 Jahre": 504}
@@ -384,6 +409,99 @@ with tab2:
             else:
                 st.info("Keine historischen Einstiegssignale im Datenzeitraum erkennbar.")
 
+            # ── Trefferquoten-Analyse ──────────────────────────────
+            if entry_sigs:
+                st.markdown("#### 🎯 Trefferquoten-Analyse: Hat der Boden gehalten?")
+                st.caption("Prüft ob nach jedem Einstiegssignal innerhalb von 40 Tagen eine Trendwende (+5% oder +10%) stattgefunden hat.")
+
+                hr = compute_hit_rate(entry_sigs, df_full, forward_days=40)
+
+                if hr["total"] > 0:
+                    rate_pct = hr["rate"] * 100
+                    # Farbige Gesamtbewertung
+                    if rate_pct >= 65:
+                        rate_color = "#1a9e3f"
+                        rate_label = "🟢 Zuverlässiges Signal"
+                    elif rate_pct >= 45:
+                        rate_color = "#f39c12"
+                        rate_label = "🟡 Mittelmäßig zuverlässig"
+                    else:
+                        rate_color = "#c0392b"
+                        rate_label = "🔴 Wenig zuverlässig"
+
+                    # Gauge + Metriken
+                    hc1, hc2 = st.columns([1, 2])
+                    with hc1:
+                        pass  # go already imported
+                        fig_hr = go.Figure(go.Indicator(
+                            mode="gauge+number",
+                            value=rate_pct,
+                            number={"suffix": "%", "font": {"size": 48, "color": rate_color, "family": "Arial Black"}},
+                            title={"text": f"Trefferquote<br><span style='font-size:13px;color:{rate_color}'>{rate_label}</span>",
+                                   "font": {"size": 15, "color": "white"}},
+                            gauge={
+                                "axis": {"range": [0, 100]},
+                                "bar":  {"color": rate_color},
+                                "bgcolor": "#161b22",
+                                "steps": [
+                                    {"range": [0, 45],  "color": "#2d1b1b"},
+                                    {"range": [45, 65], "color": "#2d2a1b"},
+                                    {"range": [65, 100],"color": "#1b2d1b"},
+                                ],
+                                "threshold": {"line": {"color": "white", "width": 3}, "value": 65},
+                            }
+                        ))
+                        fig_hr.update_layout(paper_bgcolor="rgba(0,0,0,0)", font={"color": "white"}, height=280)
+                        st.plotly_chart(fig_hr, use_container_width=True)
+
+                    with hc2:
+                        hm1, hm2, hm3 = st.columns(3)
+                        hm1.metric("Analysierte Signale", hr["total"])
+                        hm2.metric("✅ Trendwenden", hr["hits"],
+                                   delta=f"+{hr['hits']}", delta_color="normal")
+                        hm3.metric("❌ Kein Boden", hr["misses"],
+                                   delta=f"-{hr['misses']}", delta_color="inverse")
+
+                        # Detailtabelle mit Farbmarkierung
+                        if hr["details"]:
+                            row_colors = {
+                                "strong":   "#1a4d2e",   # dunkelgrün
+                                "weak":     "#4d3d00",   # dunkelgelb
+                                "fail":     "#4d1a1a",   # dunkelrot
+                                "sideways": "#2d2d2d",   # grau
+                                "new":      "#1a2d4d",   # dunkelblau
+                            }
+                            rows_html = ""
+                            for d in hr["details"]:
+                                rc  = d.get("result_code", "sideways")
+                                bg  = row_colors.get(rc, "#222")
+                                mg  = d.get("max_gain_pct")
+                                ml  = d.get("max_loss_pct")
+                                mg_str = f"+{mg:.1f}%" if mg is not None else "–"
+                                ml_str = f"{ml:.1f}%" if ml is not None else "–"
+                                date_str = d["entry_date"].strftime("%d.%m.%Y") if hasattr(d["entry_date"],"strftime") else str(d["entry_date"])
+                                rows_html += (
+                                    f"<tr style='background:{bg}'>"
+                                    f"<td style='padding:7px 10px;color:#ccc'>{date_str}</td>"
+                                    f"<td style='padding:7px 10px;color:#ccc;text-align:right'>{d['entry_price']:.2f} {cur}</td>"
+                                    f"<td style='padding:7px 10px;font-weight:700;color:#{'4ade80' if 'strong' in rc else 'fbbf24' if 'weak' in rc else 'f87171' if 'fail' in rc else '94a3b8'}'>{d['result']}</td>"
+                                    f"<td style='padding:7px 10px;color:#4ade80;text-align:right'>{mg_str}</td>"
+                                    f"<td style='padding:7px 10px;color:#f87171;text-align:right'>{ml_str}</td>"
+                                    f"</tr>"
+                                )
+                            st.markdown(
+                                f"<div style='overflow-x:auto'>"
+                                f"<table style='border-collapse:collapse;width:100%;font-size:12px;font-family:sans-serif'>"
+                                f"<thead><tr style='background:#1e2235;color:#8892a4;font-size:10px;text-transform:uppercase'>"
+                                f"<th style='padding:8px 10px'>Einstieg</th>"
+                                f"<th style='padding:8px 10px;text-align:right'>Preis</th>"
+                                f"<th style='padding:8px 10px'>Ergebnis</th>"
+                                f"<th style='padding:8px 10px;text-align:right'>Max Gewinn</th>"
+                                f"<th style='padding:8px 10px;text-align:right'>Max Verlust</th>"
+                                f"</tr></thead><tbody>{rows_html}</tbody></table></div>",
+                                unsafe_allow_html=True
+                            )
+
             # ── Muster & Targets ──────────────────────────────────
             if data.get("Patterns"):
                 st.markdown("#### 📐 Erkannte Muster")
@@ -517,7 +635,12 @@ with tab3:
                 st.warning("Keine Formationen gefunden.")
 
     else:
-        sel_t3 = st.selectbox("Aktie:", get_all_tickers(), key="form_single")
+        sq3 = st.text_input("🔍 Aktie suchen:", placeholder="z.B. Porsche, Ferrari, Toyota …", key="form_search")
+        all_t3 = get_all_tickers()
+        sugg3  = search_ticker(sq3, all_t3, 10) if sq3.strip() else [get_display_name(t) for t in all_t3[:10]]
+        if not sugg3: sugg3 = [get_display_name(t) for t in all_t3[:5]]
+        lbl3   = st.selectbox("Ergebnisse:", sugg3, key="form_single_lbl")
+        sel_t3 = label_to_ticker(lbl3)
         if sel_t3:
             with st.spinner(f"Analysiere {sel_t3} …"):
                 data = get_detail_analysis(sel_t3)

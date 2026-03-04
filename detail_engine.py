@@ -207,6 +207,98 @@ def _find_entry_signals(df: pd.DataFrame) -> list[dict]:
     return entries
 
 
+def compute_hit_rate(entry_signals: list[dict], df: pd.DataFrame, forward_days: int = 40) -> dict:
+    """
+    Berechnet für jedes historische Einstiegssignal, ob danach eine
+    echte Trendwende stattgefunden hat.
+    
+    Kriterium Trendwende: Kurs stieg innerhalb von `forward_days` Tagen
+    um mind. 5% über den Einstiegspreis.
+    
+    Gibt zurück:
+    {
+      "total": int,
+      "hits": int,           # echte Bodenbildung bestätigt
+      "misses": int,         # kein Anstieg >5%
+      "rate": float,         # 0.0–1.0
+      "details": list[dict]  # pro Signal: date, entry_price, result, max_gain_pct
+    }
+    """
+    if not entry_signals or df.empty:
+        return {"total": 0, "hits": 0, "misses": 0, "rate": 0.0, "details": []}
+
+    hits   = 0
+    misses = 0
+    details = []
+    # Wir brauchen mind. forward_days Zukunftsdaten → letzte Signale ausschließen
+    cutoff = df.index[-forward_days] if len(df) > forward_days else df.index[0]
+
+    for e in entry_signals:
+        entry_date  = e["entry_date"]
+        entry_price = e["entry_price"]
+
+        # Signal zu nah am Ende → kein Forward-Window
+        try:
+            if entry_date > cutoff:
+                details.append({
+                    "entry_date":  entry_date,
+                    "entry_price": entry_price,
+                    "result":      "⏳ Zu Neu",
+                    "result_code": "new",
+                    "max_gain_pct": None,
+                })
+                continue
+
+            fwd_data = df[df.index > entry_date].head(forward_days)
+            if fwd_data.empty:
+                continue
+
+            max_close   = float(fwd_data["Close"].max())
+            max_gain    = round((max_close - entry_price) / entry_price * 100, 1) if entry_price else 0
+            min_close   = float(fwd_data["Close"].min())
+            max_loss    = round((min_close - entry_price) / entry_price * 100, 1) if entry_price else 0
+
+            # Bewertung
+            if max_gain >= 10:
+                result = "✅ Starke Wende"
+                result_code = "strong"
+                hits += 1
+            elif max_gain >= 5:
+                result = "🟡 Schwache Wende"
+                result_code = "weak"
+                hits += 1
+            elif max_loss < -5 and max_gain < 3:
+                result = "❌ Kein Boden"
+                result_code = "fail"
+                misses += 1
+            else:
+                result = "⚠️ Seitwärts"
+                result_code = "sideways"
+                misses += 1
+
+            details.append({
+                "entry_date":   entry_date,
+                "entry_price":  entry_price,
+                "result":       result,
+                "result_code":  result_code,
+                "max_gain_pct": max_gain,
+                "max_loss_pct": max_loss,
+            })
+        except Exception:
+            continue
+
+    total = hits + misses
+    rate  = round(hits / total, 2) if total > 0 else 0.0
+
+    return {
+        "total":   total,
+        "hits":    hits,
+        "misses":  misses,
+        "rate":    rate,
+        "details": details,
+    }
+
+
 def _detect_patterns_and_targets(df: pd.DataFrame) -> tuple[list, dict]:
     patterns = []
     targets  = {}
