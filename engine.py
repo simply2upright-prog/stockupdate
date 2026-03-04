@@ -1,4 +1,4 @@
-# engine.py — v3: Signal-Klassifikation OVERSOLD/OVERBOUGHT/NEUTRAL + Futures + Email
+# engine.py — v4: Klickbare Email-Links, Signal-Klassifikation, Futures
 
 import yfinance as yf
 import pandas as pd
@@ -10,13 +10,14 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from database import get_currency
 
+APP_URL = "https://stockupdate-65qjxum6gq2gpjpr5exqfd.streamlit.app"
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SIGNAL KLASSIFIKATION
 # ─────────────────────────────────────────────────────────────────────────────
 
 def classify_signal(stoch_rsi=None, stoch_fast=None, stoch_slow=None, cci=None) -> dict:
-    """OVERSOLD / OVERBOUGHT / NEUTRAL mit Farb-Metadaten."""
     os_hits = ob_hits = 0
     if stoch_rsi  is not None:
         if stoch_rsi  < 0.15:  os_hits += 2
@@ -30,7 +31,6 @@ def classify_signal(stoch_rsi=None, stoch_fast=None, stoch_slow=None, cci=None) 
     if cci is not None:
         if cci < -100:  os_hits += 1
         elif cci > 100: ob_hits += 1
-
     if os_hits >= 2 and os_hits > ob_hits:
         return {"label":"OVERSOLD",   "emoji":"🟢","color":"#1a9e3f","bg":"#e8f9ed","short":"OS"}
     elif ob_hits >= 2 and ob_hits > os_hits:
@@ -40,7 +40,7 @@ def classify_signal(stoch_rsi=None, stoch_fast=None, stoch_slow=None, cci=None) 
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SCANNER ENGINE (Aktien)
+# SCANNER ENGINE
 # ─────────────────────────────────────────────────────────────────────────────
 
 def get_analysis(ticker: str, retries: int = 2) -> dict | None:
@@ -59,14 +59,13 @@ def get_analysis(ticker: str, retries: int = 2) -> dict | None:
             gain  = delta.where(delta > 0, 0.0).rolling(rsi_w).mean()
             loss  = (-delta.where(delta < 0, 0.0)).rolling(rsi_w).mean()
             df['RSI'] = 100 - (100 / (1 + gain / loss.replace(0, np.nan)))
-
-            rsi_r = (df['RSI'].rolling(rsi_w).max() - df['RSI'].rolling(rsi_w).min()).replace(0, np.nan)
+            rsi_r     = (df['RSI'].rolling(rsi_w).max() - df['RSI'].rolling(rsi_w).min()).replace(0, np.nan)
             df['StochRSI'] = (df['RSI'] - df['RSI'].rolling(rsi_w).min()) / rsi_r
 
-            slow_w  = 200 if has_200 else 70
-            hl_f    = (df['High'].rolling(70).max() - df['Low'].rolling(70).min()).replace(0, np.nan)
+            slow_w = 200 if has_200 else 70
+            hl_f   = (df['High'].rolling(70).max() - df['Low'].rolling(70).min()).replace(0, np.nan)
             df['Stoch_Fast'] = 100 * (df['Close'] - df['Low'].rolling(70).min()) / hl_f
-            hl_s    = (df['High'].rolling(slow_w).max() - df['Low'].rolling(slow_w).min()).replace(0, np.nan)
+            hl_s   = (df['High'].rolling(slow_w).max() - df['Low'].rolling(slow_w).min()).replace(0, np.nan)
             df['Stoch_Slow'] = 100 * (df['Close'] - df['Low'].rolling(slow_w).min()) / hl_s
 
             tp   = (df['High'] + df['Low'] + df['Close']) / 3
@@ -84,9 +83,9 @@ def get_analysis(ticker: str, retries: int = 2) -> dict | None:
             cv = _s(df['CCI'].iloc[-1], 1)
 
             score = 0
-            if sv and 0 < sv < 0.1:                          score += 1
-            if sf and ss and sf < 10 and ss < 15:            score += 1
-            if cv and cv > -100:                             score += 1
+            if sv and 0 < sv < 0.1:                        score += 1
+            if sf and ss and sf < 10 and ss < 15:          score += 1
+            if cv and cv > -100:                           score += 1
 
             sig = classify_signal(sv, sf, ss, cv)
 
@@ -117,36 +116,36 @@ def get_analysis(ticker: str, retries: int = 2) -> dict | None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# FUTURES (Rohstoffe, Energie, Index-Futures)
+# FUTURES
 # ─────────────────────────────────────────────────────────────────────────────
 
 FUTURES_TICKERS = {
-    "CL=F":   {"name":"Crude Oil (WTI)",     "group":"Energie",   "unit":"$/bbl"},
-    "BZ=F":   {"name":"Brent Crude Oil",     "group":"Energie",   "unit":"$/bbl"},
-    "NG=F":   {"name":"Natural Gas",         "group":"Energie",   "unit":"$/MMBtu"},
-    "RB=F":   {"name":"RBOB Gasoline",       "group":"Energie",   "unit":"$/gal"},
-    "HO=F":   {"name":"Heating Oil",         "group":"Energie",   "unit":"$/gal"},
-    "GC=F":   {"name":"Gold",                "group":"Edelmetalle","unit":"$/oz"},
-    "SI=F":   {"name":"Silber",              "group":"Edelmetalle","unit":"$/oz"},
-    "PL=F":   {"name":"Platin",              "group":"Edelmetalle","unit":"$/oz"},
-    "PA=F":   {"name":"Palladium",           "group":"Edelmetalle","unit":"$/oz"},
-    "HG=F":   {"name":"Kupfer",              "group":"Edelmetalle","unit":"$/lb"},
-    "ZC=F":   {"name":"Mais (Corn)",         "group":"Agrar",     "unit":"¢/bu"},
-    "ZW=F":   {"name":"Weizen (Wheat)",      "group":"Agrar",     "unit":"¢/bu"},
-    "ZS=F":   {"name":"Soja (Soybeans)",     "group":"Agrar",     "unit":"¢/bu"},
-    "KC=F":   {"name":"Kaffee (Coffee)",     "group":"Agrar",     "unit":"¢/lb"},
-    "CT=F":   {"name":"Baumwolle (Cotton)",  "group":"Agrar",     "unit":"¢/lb"},
-    "SB=F":   {"name":"Zucker (Sugar)",      "group":"Agrar",     "unit":"¢/lb"},
-    "CC=F":   {"name":"Kakao (Cocoa)",       "group":"Agrar",     "unit":"$/t"},
-    "ES=F":   {"name":"S&P 500 Future",      "group":"Index",     "unit":"Pkt"},
-    "NQ=F":   {"name":"NASDAQ 100 Future",   "group":"Index",     "unit":"Pkt"},
-    "YM=F":   {"name":"Dow Jones Future",    "group":"Index",     "unit":"Pkt"},
-    "RTY=F":  {"name":"Russell 2000 Future", "group":"Index",     "unit":"Pkt"},
-    "6E=F":   {"name":"EUR/USD Future",      "group":"FX",        "unit":""},
-    "6J=F":   {"name":"JPY/USD Future",      "group":"FX",        "unit":""},
-    "6B=F":   {"name":"GBP/USD Future",      "group":"FX",        "unit":""},
-    "BTC=F":  {"name":"Bitcoin Future",      "group":"Krypto",    "unit":"$"},
-    "ETH=F":  {"name":"Ethereum Future",     "group":"Krypto",    "unit":"$"},
+    "CL=F":  {"name":"Crude Oil (WTI)",     "group":"Energie",    "unit":"$/bbl"},
+    "BZ=F":  {"name":"Brent Crude Oil",     "group":"Energie",    "unit":"$/bbl"},
+    "NG=F":  {"name":"Natural Gas",         "group":"Energie",    "unit":"$/MMBtu"},
+    "RB=F":  {"name":"RBOB Gasoline",       "group":"Energie",    "unit":"$/gal"},
+    "HO=F":  {"name":"Heating Oil",         "group":"Energie",    "unit":"$/gal"},
+    "GC=F":  {"name":"Gold",                "group":"Edelmetalle","unit":"$/oz"},
+    "SI=F":  {"name":"Silber",              "group":"Edelmetalle","unit":"$/oz"},
+    "PL=F":  {"name":"Platin",              "group":"Edelmetalle","unit":"$/oz"},
+    "PA=F":  {"name":"Palladium",           "group":"Edelmetalle","unit":"$/oz"},
+    "HG=F":  {"name":"Kupfer",              "group":"Edelmetalle","unit":"$/lb"},
+    "ZC=F":  {"name":"Mais (Corn)",         "group":"Agrar",      "unit":"¢/bu"},
+    "ZW=F":  {"name":"Weizen (Wheat)",      "group":"Agrar",      "unit":"¢/bu"},
+    "ZS=F":  {"name":"Soja (Soybeans)",     "group":"Agrar",      "unit":"¢/bu"},
+    "KC=F":  {"name":"Kaffee (Coffee)",     "group":"Agrar",      "unit":"¢/lb"},
+    "CT=F":  {"name":"Baumwolle (Cotton)",  "group":"Agrar",      "unit":"¢/lb"},
+    "SB=F":  {"name":"Zucker (Sugar)",      "group":"Agrar",      "unit":"¢/lb"},
+    "CC=F":  {"name":"Kakao (Cocoa)",       "group":"Agrar",      "unit":"$/t"},
+    "ES=F":  {"name":"S&P 500 Future",      "group":"Index",      "unit":"Pkt"},
+    "NQ=F":  {"name":"NASDAQ 100 Future",   "group":"Index",      "unit":"Pkt"},
+    "YM=F":  {"name":"Dow Jones Future",    "group":"Index",      "unit":"Pkt"},
+    "RTY=F": {"name":"Russell 2000 Future", "group":"Index",      "unit":"Pkt"},
+    "6E=F":  {"name":"EUR/USD Future",      "group":"FX",         "unit":""},
+    "6J=F":  {"name":"JPY/USD Future",      "group":"FX",         "unit":""},
+    "6B=F":  {"name":"GBP/USD Future",      "group":"FX",         "unit":""},
+    "BTC=F": {"name":"Bitcoin Future",      "group":"Krypto",     "unit":"$"},
+    "ETH=F": {"name":"Ethereum Future",     "group":"Krypto",     "unit":"$"},
 }
 
 
@@ -163,8 +162,7 @@ def get_futures_analysis(ticker: str) -> dict | None:
         gain  = delta.where(delta > 0, 0.0).rolling(rsi_w).mean()
         loss  = (-delta.where(delta < 0, 0.0)).rolling(rsi_w).mean()
         df['RSI'] = 100 - (100 / (1 + gain / loss.replace(0, np.nan)))
-
-        rsi_r = (df['RSI'].rolling(rsi_w).max() - df['RSI'].rolling(rsi_w).min()).replace(0, np.nan)
+        rsi_r     = (df['RSI'].rolling(rsi_w).max() - df['RSI'].rolling(rsi_w).min()).replace(0, np.nan)
         df['StochRSI'] = (df['RSI'] - df['RSI'].rolling(rsi_w).min()) / rsi_r
 
         w14 = min(14, len(df)-1)
@@ -211,26 +209,14 @@ def get_futures_analysis(ticker: str) -> dict | None:
         df_1y = df.tail(252)
 
         return {
-            "Ticker":   ticker,
-            "Name":     meta["name"],
-            "Gruppe":   meta["group"],
-            "Einheit":  meta["unit"],
-            "Signal":   f"{sig['emoji']} {sig['label']}",
-            "Sig_Data": sig,
-            "Preis":    price,
-            "52W_Hoch": _s(df_1y['High'].max()),
-            "52W_Tief": _s(df_1y['Low'].min()),
+            "Ticker":   ticker, "Name": meta["name"], "Gruppe": meta["group"],
+            "Einheit":  meta["unit"], "Signal": f"{sig['emoji']} {sig['label']}",
+            "Sig_Data": sig, "Preis": price,
+            "52W_Hoch": _s(df_1y['High'].max()), "52W_Tief": _s(df_1y['Low'].min()),
             "Perf_1W":  _s(((df['Close'].iloc[-1]/df['Close'].iloc[-5])-1)*100 if len(df)>=5 else None, 2),
             "Perf_1M":  _s(((df['Close'].iloc[-1]/df['Close'].iloc[-22])-1)*100 if len(df)>=22 else None, 2),
-            "RSI":      rsi_v,
-            "StochRSI": sr,
-            "Stoch_K":  sk,
-            "Stoch_D":  sd,
-            "CCI":      cci,
-            "Z_Score":  zscore,
-            "RVOL":     rvol,
-            "Score":    score,
-            "df":       df,
+            "RSI": rsi_v, "StochRSI": sr, "Stoch_K": sk, "Stoch_D": sd,
+            "CCI": cci, "Z_Score": zscore, "RVOL": rvol, "Score": score, "df": df,
         }
     except Exception as e:
         print(f"[futures] {ticker}: {e}")
@@ -238,11 +224,11 @@ def get_futures_analysis(ticker: str) -> dict | None:
 
 
 def get_all_futures_groups() -> list:
-    seen, result = set(), []
+    seen, r = set(), []
     for v in FUTURES_TICKERS.values():
         if v["group"] not in seen:
-            seen.add(v["group"]); result.append(v["group"])
-    return result
+            seen.add(v["group"]); r.append(v["group"])
+    return r
 
 
 def get_futures_by_group(group: str) -> list:
@@ -250,7 +236,7 @@ def get_futures_by_group(group: str) -> list:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# EMAIL
+# EMAIL — mit klickbaren Ticker-Links und App-Header-Link
 # ─────────────────────────────────────────────────────────────────────────────
 
 def send_mail_report(df_results, password, total_scanned=0, success_count=0, failed_count=0) -> str:
@@ -261,117 +247,178 @@ def send_mail_report(df_results, password, total_scanned=0, success_count=0, fai
             signals = df_results[df_results['Score'] > 1].sort_values("Score", ascending=False)
 
         def _badge(v, low, high, invert=False):
-            if v is None: return "<td style='color:#555'>N/A</td>"
+            if v is None: return "<td style='color:#aaa;text-align:center'>N/A</td>"
             try:
                 fv = float(v)
                 if fv <= low:
-                    bg,fc,t = ("#e6f9ee","#1a9e3f","OS") if not invert else ("#fee","#c0392b","OB")
+                    bg,fc,t = ("#e6f9ee","#1a9e3f","OS") if not invert else ("#fee2e2","#c0392b","OB")
                 elif fv >= high:
-                    bg,fc,t = ("#fee","#c0392b","OB") if not invert else ("#e6f9ee","#1a9e3f","OS")
+                    bg,fc,t = ("#fee2e2","#c0392b","OB") if not invert else ("#e6f9ee","#1a9e3f","OS")
                 else:
-                    bg,fc,t = "#f8f8f8","#888","–"
-                b = f"<span style='background:{fc};color:#fff;padding:1px 5px;border-radius:3px;font-size:10px;font-weight:bold'>{t}</span>"
+                    bg,fc,t = "#f8f8f8","#666","–"
+                b   = f"<span style='background:{fc};color:#fff;padding:1px 6px;border-radius:4px;font-size:10px;font-weight:700'>{t}</span>"
                 fmt = "{:.3f}" if abs(fv) < 10 else "{:.1f}"
-                return f"<td style='background:{bg};text-align:center;padding:8px 6px'>{b} {fmt.format(fv)}</td>"
-            except: return f"<td>{v}</td>"
+                return f"<td style='background:{bg};text-align:center;padding:9px 6px'>{b}<br><span style='font-size:11px;color:#444'>{fmt.format(fv)}</span></td>"
+            except: return f"<td style='text-align:center'>{v}</td>"
 
-        def _sig_html(row):
+        def _sig_cell(row):
             sig = classify_signal(row.get('StochRSI'), row.get('Stoch_Fast'), row.get('Stoch_Slow'), row.get('CCI'))
-            return f"<span style='background:{sig['color']};color:#fff;padding:3px 10px;border-radius:12px;font-size:11px;font-weight:bold'>{sig['emoji']} {sig['label']}</span>"
+            return (f"<td style='text-align:center'>"
+                    f"<span style='background:{sig['color']};color:#fff;padding:4px 10px;"
+                    f"border-radius:14px;font-size:11px;font-weight:700;white-space:nowrap'>"
+                    f"{sig['emoji']} {sig['label']}</span></td>")
+
+        def _ticker_link(ticker, name):
+            # Deep-link: ?ticker=ALV.DE öffnet direkt Detail-Analyse
+            url = f"{APP_URL}/?ticker={ticker}"
+            return (f"<td style='padding:9px 8px'>"
+                    f"<a href='{url}' style='color:#3b82f6;font-weight:700;text-decoration:none;font-size:13px'>{ticker}</a>"
+                    f"<br><span style='color:#888;font-size:11px'>{name}</span></td>")
 
         sc_colors = {3:"#1a9e3f",2:"#f39c12",1:"#7f8c8d"}
         rows = ""
         for _, r in signals.iterrows():
-            sc = int(r.get('Score',0))
-            rows += f"""<tr>
-              <td style='font-weight:700;color:#1a1a2e;white-space:nowrap'>{r.get('Ticker','')}</td>
-              <td style='color:#444'>{r.get('Name','')}</td>
-              <td style='text-align:center'>{_sig_html(r)}</td>
-              <td style='text-align:right;font-weight:700'>{r.get('Preis','')}</td>
+            sc   = int(r.get('Score',0))
+            sc_c = sc_colors.get(sc,"#999")
+            rows += f"""<tr style='border-bottom:1px solid #f0f0f0'>
+              {_ticker_link(r.get('Ticker',''), r.get('Name',''))}
+              {_sig_cell(r)}
+              <td style='text-align:right;padding:9px 8px;font-weight:700;font-size:13px'>{r.get('Preis','')}</td>
               {_badge(r.get('StochRSI'),0.15,0.85)}
               {_badge(r.get('Stoch_Fast'),20,80)}
               {_badge(r.get('Stoch_Slow'),25,75)}
               {_badge(r.get('CCI'),-100,100,invert=True)}
-              <td style='text-align:center'><span style='background:{sc_colors.get(sc,"#999")};color:#fff;padding:2px 10px;border-radius:10px;font-weight:700'>{sc}/3</span></td>
-              <td style='text-align:center;color:#666'>{r.get('Div','')}</td>
-              <td style='text-align:center;color:#666'>{r.get('KGV','')}</td>
+              <td style='text-align:center;padding:9px 8px'>
+                <span style='background:{sc_c};color:#fff;padding:3px 10px;border-radius:12px;font-weight:700;font-size:12px'>{sc}/3</span>
+              </td>
+              <td style='text-align:center;color:#666;font-size:12px;padding:9px 8px'>{r.get('Div','')}</td>
+              <td style='text-align:center;color:#666;font-size:12px;padding:9px 8px'>{r.get('KGV','')}</td>
             </tr>"""
 
-        tbl = f"""<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;font-size:12px">
-          <tr style="background:#2c3e50">
-            <th style="color:#fff;padding:10px 8px;text-align:left">Ticker</th>
-            <th style="color:#fff;padding:10px 8px;text-align:left">Name</th>
-            <th style="color:#fff;padding:10px 8px;text-align:center">Signal</th>
-            <th style="color:#fff;padding:10px 8px;text-align:right">Preis</th>
-            <th style="color:#fff;padding:10px 8px;text-align:center">StochRSI</th>
-            <th style="color:#fff;padding:10px 8px;text-align:center">Stoch F</th>
-            <th style="color:#fff;padding:10px 8px;text-align:center">Stoch S</th>
-            <th style="color:#fff;padding:10px 8px;text-align:center">CCI</th>
-            <th style="color:#fff;padding:10px 8px;text-align:center">Score</th>
-            <th style="color:#fff;padding:10px 8px;text-align:center">Div</th>
-            <th style="color:#fff;padding:10px 8px;text-align:center">KGV</th>
-          </tr>{rows}</table>""" if not signals.empty else "<p style='color:#888;font-style:italic'>Keine Signale mit Score &gt; 1 gefunden.</p>"
+        tbl = f"""<table width="100%" cellpadding="0" cellspacing="0"
+            style="border-collapse:collapse;font-size:12px;font-family:'Segoe UI',Arial,sans-serif">
+          <thead>
+            <tr style="background:#1e293b">
+              <th style="color:#94a3b8;padding:11px 8px;text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:.8px;font-weight:600">Ticker / Name</th>
+              <th style="color:#94a3b8;padding:11px 8px;text-align:center;font-size:10px;text-transform:uppercase;letter-spacing:.8px;font-weight:600">Signal</th>
+              <th style="color:#94a3b8;padding:11px 8px;text-align:right;font-size:10px;text-transform:uppercase;letter-spacing:.8px;font-weight:600">Preis</th>
+              <th style="color:#94a3b8;padding:11px 8px;text-align:center;font-size:10px;text-transform:uppercase;letter-spacing:.8px;font-weight:600">StochRSI</th>
+              <th style="color:#94a3b8;padding:11px 8px;text-align:center;font-size:10px;text-transform:uppercase;letter-spacing:.8px;font-weight:600">Stoch F</th>
+              <th style="color:#94a3b8;padding:11px 8px;text-align:center;font-size:10px;text-transform:uppercase;letter-spacing:.8px;font-weight:600">Stoch S</th>
+              <th style="color:#94a3b8;padding:11px 8px;text-align:center;font-size:10px;text-transform:uppercase;letter-spacing:.8px;font-weight:600">CCI</th>
+              <th style="color:#94a3b8;padding:11px 8px;text-align:center;font-size:10px;text-transform:uppercase;letter-spacing:.8px;font-weight:600">Score</th>
+              <th style="color:#94a3b8;padding:11px 8px;text-align:center;font-size:10px;text-transform:uppercase;letter-spacing:.8px;font-weight:600">Div</th>
+              <th style="color:#94a3b8;padding:11px 8px;text-align:center;font-size:10px;text-transform:uppercase;letter-spacing:.8px;font-weight:600">KGV</th>
+            </tr>
+          </thead>
+          <tbody>{rows if rows else "<tr><td colspan='10' style='text-align:center;padding:24px;color:#aaa;font-style:italic'>Keine Signale mit Score &gt; 1 gefunden.</td></tr>"}</tbody>
+        </table>""" 
 
         now = datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M UTC")
 
-        body = f"""<!DOCTYPE html><html><head><meta charset="UTF-8"></head>
-<body style="margin:0;padding:0;background:#f0f2f5;font-family:'Segoe UI',Arial,sans-serif">
-<div style="max-width:860px;margin:24px auto;padding:0 16px">
+        body = f"""<!DOCTYPE html><html><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+</head>
+<body style="margin:0;padding:0;background:#f1f5f9;font-family:'Segoe UI',Arial,sans-serif">
+<div style="max-width:880px;margin:0 auto;padding:20px 16px">
 
-  <!-- HEADER -->
-  <div style="background:linear-gradient(135deg,#1a1d2e 0%,#252840 100%);border-radius:16px;padding:28px 32px;margin-bottom:16px">
-    <div style="font-size:26px;font-weight:900;color:#00d4ff;letter-spacing:1px">📊 In8Invest</div>
-    <div style="color:#8892a4;font-size:14px;margin-top:6px">Daily Strategy Report &nbsp;·&nbsp; {now}</div>
+  <!-- HEADER mit App-Link -->
+  <div style="background:linear-gradient(135deg,#0f172a 0%,#1e293b 60%,#0f2744 100%);
+              border-radius:16px;padding:28px 32px;margin-bottom:16px;
+              border:1px solid #334155">
+    <table width="100%" cellpadding="0" cellspacing="0"><tr>
+      <td>
+        <div style="font-size:24px;font-weight:900;color:#fff;letter-spacing:.5px">
+          📊 <span style="color:#38bdf8">In8</span>Invest
+        </div>
+        <div style="color:#94a3b8;font-size:13px;margin-top:5px">
+          Daily Strategy Report &nbsp;·&nbsp; {now}
+        </div>
+      </td>
+      <td style="text-align:right;vertical-align:middle">
+        <a href="{APP_URL}" style="background:#3b82f6;color:#fff;padding:10px 20px;
+           border-radius:8px;text-decoration:none;font-weight:700;font-size:13px;
+           display:inline-block">
+          📱 App öffnen →
+        </a>
+      </td>
+    </tr></table>
   </div>
 
-  <!-- STATS -->
-  <div style="display:flex;gap:12px;margin-bottom:16px;flex-wrap:wrap">
-    <div style="flex:1;min-width:120px;background:#fff;border-radius:12px;padding:20px;text-align:center;box-shadow:0 2px 8px rgba(0,0,0,0.06)">
-      <div style="font-size:32px;font-weight:900;color:#3498db">{total_scanned}</div>
-      <div style="font-size:11px;color:#999;text-transform:uppercase;letter-spacing:1px;margin-top:4px">Geprüft</div>
-    </div>
-    <div style="flex:1;min-width:120px;background:#fff;border-radius:12px;padding:20px;text-align:center;box-shadow:0 2px 8px rgba(0,0,0,0.06)">
-      <div style="font-size:32px;font-weight:900;color:#1a9e3f">{success_count}</div>
-      <div style="font-size:11px;color:#999;text-transform:uppercase;letter-spacing:1px;margin-top:4px">Erfolgreich</div>
-    </div>
-    <div style="flex:1;min-width:120px;background:#fff;border-radius:12px;padding:20px;text-align:center;box-shadow:0 2px 8px rgba(0,0,0,0.06)">
-      <div style="font-size:32px;font-weight:900;color:#e74c3c">{failed_count}</div>
-      <div style="font-size:11px;color:#999;text-transform:uppercase;letter-spacing:1px;margin-top:4px">Fehler</div>
-    </div>
-    <div style="flex:1;min-width:120px;background:#fff;border-radius:12px;padding:20px;text-align:center;box-shadow:0 2px 8px rgba(0,0,0,0.06)">
-      <div style="font-size:32px;font-weight:900;color:#f39c12">{len(signals)}</div>
-      <div style="font-size:11px;color:#999;text-transform:uppercase;letter-spacing:1px;margin-top:4px">Signale</div>
-    </div>
+  <!-- STATISTIK-KACHELN -->
+  <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:16px">
+    <tr>
+      <td width="25%" style="padding:0 6px 0 0">
+        <div style="background:#fff;border-radius:12px;padding:20px;text-align:center;
+                    box-shadow:0 1px 6px rgba(0,0,0,.08);border-top:3px solid #3b82f6">
+          <div style="font-size:34px;font-weight:900;color:#3b82f6">{total_scanned}</div>
+          <div style="font-size:10px;color:#94a3b8;text-transform:uppercase;letter-spacing:1px;margin-top:4px">Geprüft</div>
+        </div>
+      </td>
+      <td width="25%" style="padding:0 6px">
+        <div style="background:#fff;border-radius:12px;padding:20px;text-align:center;
+                    box-shadow:0 1px 6px rgba(0,0,0,.08);border-top:3px solid #1a9e3f">
+          <div style="font-size:34px;font-weight:900;color:#1a9e3f">{success_count}</div>
+          <div style="font-size:10px;color:#94a3b8;text-transform:uppercase;letter-spacing:1px;margin-top:4px">Erfolgreich</div>
+        </div>
+      </td>
+      <td width="25%" style="padding:0 6px">
+        <div style="background:#fff;border-radius:12px;padding:20px;text-align:center;
+                    box-shadow:0 1px 6px rgba(0,0,0,.08);border-top:3px solid #e74c3c">
+          <div style="font-size:34px;font-weight:900;color:#e74c3c">{failed_count}</div>
+          <div style="font-size:10px;color:#94a3b8;text-transform:uppercase;letter-spacing:1px;margin-top:4px">Fehler</div>
+        </div>
+      </td>
+      <td width="25%" style="padding:0 0 0 6px">
+        <div style="background:#fff;border-radius:12px;padding:20px;text-align:center;
+                    box-shadow:0 1px 6px rgba(0,0,0,.08);border-top:3px solid #f39c12">
+          <div style="font-size:34px;font-weight:900;color:#f39c12">{len(signals)}</div>
+          <div style="font-size:10px;color:#94a3b8;text-transform:uppercase;letter-spacing:1px;margin-top:4px">Signale</div>
+        </div>
+      </td>
+    </tr>
+  </table>
+
+  <!-- KRITERIEN-BOX -->
+  <div style="background:#fffbeb;border-left:4px solid #f59e0b;border-radius:0 10px 10px 0;
+              padding:12px 16px;margin-bottom:16px;font-size:12px;color:#78350f">
+    <b>Scan-Kriterien:</b>
+    StochRSI(70) &lt; 0.1 &nbsp;|&nbsp; Stoch Fast(70) &lt; 10 &amp; Slow(200) &lt; 15 &nbsp;|&nbsp; CCI(40) &gt; −100
+    <br>
+    <b>Legende:</b> &nbsp;
+    <span style="background:#1a9e3f;color:#fff;padding:1px 7px;border-radius:4px;font-size:10px;font-weight:700">OS</span> Oversold &nbsp;
+    <span style="background:#c0392b;color:#fff;padding:1px 7px;border-radius:4px;font-size:10px;font-weight:700">OB</span> Overbought &nbsp;
+    <span style="background:#7f8c8d;color:#fff;padding:1px 7px;border-radius:4px;font-size:10px;font-weight:700">–</span> Neutral &nbsp;·&nbsp;
+    <i>Ticker anklicken → öffnet Detail-Analyse in der App</i>
   </div>
 
-  <!-- KRITERIEN -->
-  <div style="background:#fff8e6;border-left:4px solid #f39c12;border-radius:0 8px 8px 0;padding:12px 16px;margin-bottom:16px;font-size:12px;color:#7d6608">
-    <b>Scan-Kriterien:</b> StochRSI(70) &lt; 0.1 &nbsp;|&nbsp; Stoch Fast(70) &lt; 10 &amp; Slow(200) &lt; 15 &nbsp;|&nbsp; CCI(40) &gt; −100
-    <br><b>Legende:</b>
-    <span style="background:#1a9e3f;color:#fff;padding:1px 6px;border-radius:3px;font-size:11px">OS</span> Oversold &nbsp;
-    <span style="background:#c0392b;color:#fff;padding:1px 6px;border-radius:3px;font-size:11px">OB</span> Overbought &nbsp;
-    <span style="background:#7f8c8d;color:#fff;padding:1px 6px;border-radius:3px;font-size:11px">–</span> Neutral
-  </div>
-
-  <!-- TABELLE -->
-  <div style="background:#fff;border-radius:12px;padding:24px;box-shadow:0 2px 12px rgba(0,0,0,0.07);margin-bottom:16px">
-    <h2 style="margin:0 0 16px;font-size:18px;color:#1a1a2e">🎯 Top Signale (Score ≥ 2)</h2>
-    {tbl}
+  <!-- SIGNALE-TABELLE -->
+  <div style="background:#fff;border-radius:14px;overflow:hidden;
+              box-shadow:0 2px 16px rgba(0,0,0,.09);margin-bottom:16px">
+    <div style="padding:20px 24px 14px;border-bottom:1px solid #f1f5f9">
+      <span style="font-size:17px;font-weight:800;color:#0f172a">🎯 Top Signale</span>
+      <span style="background:#f1f5f9;color:#64748b;padding:3px 10px;border-radius:8px;
+                   font-size:12px;font-weight:600;margin-left:10px">Score ≥ 2</span>
+    </div>
+    <div style="overflow-x:auto">
+      {tbl}
+    </div>
   </div>
 
   <!-- FOOTER -->
-  <div style="text-align:center;color:#aaa;font-size:11px;padding:16px 0">
+  <div style="text-align:center;color:#94a3b8;font-size:11px;padding:12px 0 20px">
     In8Invest Scanner &nbsp;·&nbsp; Automatisch generiert &nbsp;·&nbsp;
-    <a href="https://stockupdate-65qjxum6gq2gpjpr5exqfd.streamlit.app/" style="color:#3498db">App öffnen →</a>
+    <a href="{APP_URL}" style="color:#3b82f6;text-decoration:none">stockupdate.streamlit.app</a>
   </div>
 
 </div></body></html>"""
 
         msg = MIMEMultipart()
-        msg['Subject'] = f"📊 In8Invest Daily | {len(signals)} Signale | {now}"
+        msg['Subject'] = f"📊 In8Invest | {len(signals)} Signale | {now}"
         msg['From']    = sender
         msg['To']      = receiver
         msg.attach(MIMEText(body, 'html'))
+
         with smtplib.SMTP_SSL("w01a1dc3.kasserver.com", 465) as s:
             s.login(sender, password)
             s.sendmail(sender, receiver, msg.as_string())
