@@ -221,7 +221,7 @@ TICKER_LISTS = {
         "KLO.DE",  "KWS.DE",  "MLP.DE",  "O2D.DE",  "PBB.DE",
         "PNE3.DE", "PSM.DE",  "QIA.DE",  "SAF.DE",  "SDF.DE",
         "STR.DE",  "TAG.DE",  "TTK.DE",  "VAR1.DE", "VIP.DE",
-        "WUW.DE", "TUI1.DE",
+        "WUW.DE", "TUI1.DE", "LXS",
     ],
 
     # ═══════════════════════════════════════════════════════
