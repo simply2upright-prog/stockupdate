@@ -102,7 +102,7 @@ TICKER_LISTS = {
         "DEO", "RI.PA", "BF-B", "STZ", "BUD", "HEIA.AS", "HEIO.AS",
         "CARL-B.CO", "TAP", "CAMP.MI", "LVMH.PA",
         "MDLZ", "BN.PA", "UMG.AS", "DIS", "HSY", "NESN.SW", "LINDT.SW",
-        "MNST", "CELH", "KDP", "BF-B",
+        "MNST", "CELH", "KDP", "BF-B", "CPR.MI",
     ],
 
     # ═══════════════════════════════════════════════════════
