@@ -119,7 +119,7 @@ TICKER_LISTS = {
         "TW.L",   "BKG.L",  "SGRO.L", "BLND.L", "LAND.L",
         "WPP.L",  "OCDO.L", "MKS.L",  "NEXT.L", "JD.L",
         "HBR.L",  "IMI.L",  "EXPN.L", "HLMA.L", "WEIR.L",
-        "TSCO.L", "SBRY.L", "KGF.L",  "AUTO.L", "III.L",
+        "TSCO.L", "SBRY.L", "KGF.L",  "AUTO.L", "III.L", "RKT.L",
     ],
 
     # ═══════════════════════════════════════════════════════
